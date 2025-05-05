@@ -1,0 +1,25 @@
+{
+    "model": {
+        "input_size": 7840,
+        "hidden_sizes": [512, 256],
+        "num_digits": 10,
+        "num_classes": 10,
+        "dropout_rate": 0.3
+    },
+    "training": {
+        "batch_size": 64,
+        "learning_rate": 0.001,
+        "weight_decay": 1e-5,
+        "num_epochs": 15,
+        "checkpoint_interval": 5
+    },
+    "data": {
+        "train_ratio": 0.7,
+        "val_ratio": 0.15,
+        "num_samples": 20000,
+        "save_dir": "../src/Dataset/"
+    },
+    "paths": {
+        "results_dir": "../src/results/phone_balanced"
+    }
+}
