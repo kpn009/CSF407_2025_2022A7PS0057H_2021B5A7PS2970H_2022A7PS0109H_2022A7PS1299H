@@ -1,0 +1,26 @@
+{
+    "model": {
+        "input_size": 784,
+        "hidden_layers": [512, 256, 128],
+        "output_size": 9,
+        "dropout_rate": 0.3
+    },
+    "optimizer": {
+        "type": "adam",
+        "learning_rate": 0.001,
+        "weight_decay": 1e-5
+    },
+    "scheduler": {
+        "type": "step",
+        "step_size": 10,
+        "gamma": 0.1
+    },
+    "data": {
+        "batch_size": 64,
+        "num_workers": 2
+    },
+    "training": {
+        "num_epochs": 30,
+        "early_stopping": 5
+    }
+  }

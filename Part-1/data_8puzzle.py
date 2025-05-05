@@ -2,27 +2,21 @@ import os
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from torch.utils.data import Dataset, DataLoader, Subset
+from torch.utils.data import Dataset, Subset
 from torchvision import datasets, transforms
 import random
 from PIL import Image
-import json
 
 class EightPuzzleDataset(Dataset):
-    """
-    Custom Dataset for 8-Puzzle states using MNIST digits
-    """
-    def __init__(self, root_dir='./src/Dataset', train=True, transform=None, download=True):
+    def __init__(self, root_dir='./src/Dataset', train=True, transform=None, download=True, generate_84x84=True):
         """
         Args:
             root_dir (string): Directory to store the dataset
-            train (bool): If True, uses training set, else test set
-            transform (callable, optional): Optional transform to be applied on samples
-            download (bool): If True, downloads the dataset from the internet
         """
         self.root_dir = root_dir
         self.transform = transform
         self.train = train
+        self.generate_84x84 = generate_84x84
         
         # Create directory if it doesn't exist
         os.makedirs(root_dir, exist_ok=True)
@@ -59,11 +53,6 @@ class EightPuzzleDataset(Dataset):
         
         Args:
             num_samples (int): Number of puzzle states to generate
-            
-        Returns:
-            tuple: (puzzle_states, puzzle_labels)
-                puzzle_states: List of puzzles where each puzzle is a 3x3 grid of MNIST digit images
-                puzzle_labels: List of puzzles where each puzzle is a 3x3 grid of digit labels
         """
         puzzle_states = []
         puzzle_labels = []
@@ -71,29 +60,48 @@ class EightPuzzleDataset(Dataset):
         print(f"Generating {num_samples} 8-puzzle states...")
         
         for _ in range(num_samples):
-            # Generate a random valid 8-puzzle state
-            # A valid state is a permutation of [0,1,2,3,4,5,6,7,8] (0 represents the empty space)
-            # For our dataset, we'll use 9 as the empty space to make it visually distinct
             digits = list(range(1, 9)) + [0]  # 1-8 and 0 (empty space)
             random.shuffle(digits)
             
-            # Create 3x3 grid for puzzle state and labels
-            puzzle_state = torch.zeros((9, 28, 28))  # 9 positions, each 28x28 MNIST image
-            puzzle_label = torch.tensor(digits)  # Digit labels for each position
-            
-            # Fill the puzzle state with MNIST digit images
-            for i, digit in enumerate(digits):
-                if digit == 0:  # Empty space
-                    # Use a blank image (all zeros) for empty space
-                    puzzle_state[i] = torch.zeros((28, 28))
-                else:
-                    # Randomly select an image for this digit from MNIST
-                    idx = random.choice(self.digit_indices[digit])
-                    img, _ = self.mnist_dataset[idx]
-                    puzzle_state[i] = img.squeeze()  # Remove channel dimension
+            if self.generate_84x84:
+                # Create a single 84x84 image
+                puzzle_state = torch.zeros((84, 84))
+                
+                # Fill the puzzle state with MNIST digit images
+                for i in range(3):
+                    for j in range(3):
+                        pos = i * 3 + j
+                        digit = digits[pos]
+                        
+                        # Start position for this tile in the 84x84 image
+                        row_start = i * 28
+                        col_start = j * 28
+                        
+                        if digit == 0:  # Empty space
+                            # Use a blank image (all zeros) for empty space
+                            puzzle_state[row_start:row_start+28, col_start:col_start+28] = torch.zeros((28, 28))
+                        else:
+                            # Randomly select an image for this digit from MNIST
+                            idx = random.choice(self.digit_indices[digit])
+                            img, _ = self.mnist_dataset[idx]
+                            puzzle_state[row_start:row_start+28, col_start:col_start+28] = img.squeeze()
+            else:
+                # Create 3x3 grid for puzzle state (original approach)
+                puzzle_state = torch.zeros((9, 28, 28))  # 9 positions, each 28x28 MNIST image
+                
+                # Fill the puzzle state with MNIST digit images
+                for i, digit in enumerate(digits):
+                    if digit == 0:  # Empty space
+                        # Use a blank image (all zeros) for empty space
+                        puzzle_state[i] = torch.zeros((28, 28))
+                    else:
+                        # Randomly select an image for this digit from MNIST
+                        idx = random.choice(self.digit_indices[digit])
+                        img, _ = self.mnist_dataset[idx]
+                        puzzle_state[i] = img.squeeze()  # Remove channel dimension
             
             puzzle_states.append(puzzle_state)
-            puzzle_labels.append(puzzle_label)
+            puzzle_labels.append(torch.tensor(digits))
         
         print(f"Generated {len(puzzle_states)} 8-puzzle states")
         return puzzle_states, puzzle_labels
@@ -105,7 +113,7 @@ class EightPuzzleDataset(Dataset):
         puzzle_state = self.puzzle_states[idx]
         puzzle_label = self.puzzle_labels[idx]
         
-        if self.transform:
+        if not self.generate_84x84 and self.transform:
             # Apply transform to each digit image in the puzzle
             transformed_state = torch.zeros_like(puzzle_state)
             for i in range(9):
@@ -124,14 +132,31 @@ class EightPuzzleDataset(Dataset):
         """
         puzzle_state, puzzle_label = self[idx]
         
-        fig, ax = plt.subplots(3, 3, figsize=(8, 8))
-        
-        for i in range(3):
-            for j in range(3):
-                pos = i * 3 + j
-                ax[i, j].imshow(puzzle_state[pos].numpy(), cmap='gray')
-                ax[i, j].set_title(f"Label: {puzzle_label[pos].item()}")
-                ax[i, j].axis('off')
+        if self.generate_84x84:
+            # For 84x84 format, split the image into 9 tiles for visualization
+            fig, ax = plt.subplots(3, 3, figsize=(8, 8))
+            
+            for i in range(3):
+                for j in range(3):
+                    pos = i * 3 + j
+                    # Extract the tile
+                    row_start = i * 28
+                    col_start = j * 28
+                    tile = puzzle_state[row_start:row_start+28, col_start:col_start+28]
+                    
+                    ax[i, j].imshow(tile.numpy(), cmap='gray')
+                    ax[i, j].set_title(f"Label: {puzzle_label[pos].item()}")
+                    ax[i, j].axis('off')
+        else:
+            # Original format with 9 separate images
+            fig, ax = plt.subplots(3, 3, figsize=(8, 8))
+            
+            for i in range(3):
+                for j in range(3):
+                    pos = i * 3 + j
+                    ax[i, j].imshow(puzzle_state[pos].numpy(), cmap='gray')
+                    ax[i, j].set_title(f"Label: {puzzle_label[pos].item()}")
+                    ax[i, j].axis('off')
         
         plt.tight_layout()
         plt.show()
@@ -166,12 +191,79 @@ class EightPuzzleDataset(Dataset):
         dataset.puzzle_states = data['puzzle_states']
         dataset.puzzle_labels = data['puzzle_labels']
         dataset.transform = transform
+        
+        # Determine if this is an 84x84 format dataset by checking the shape of the first item
+        first_item = dataset.puzzle_states[0]
+        if isinstance(first_item, torch.Tensor) and first_item.shape == (84, 84):
+            dataset.generate_84x84 = True
+        else:
+            dataset.generate_84x84 = False
+            
         print(f"Dataset loaded from {file_path} with {len(dataset)} samples")
         return dataset
 
+def preprocess_puzzle_image(image):
+    """
+    Preprocess a puzzle image by splitting it into 9 individual 28x28 images
+    
+    Args:
+        image (torch.Tensor): Input puzzle image of shape (84, 84)
+        
+    Returns:
+        torch.Tensor: Processed images of shape (9, 28, 28)
+    """
+    # Check if image is already in the right format (9, 28, 28)
+    if isinstance(image, torch.Tensor) and image.shape == (9, 28, 28):
+        return image
+    
+    # If image is not a tensor or not 84x84, raise an error
+    if not isinstance(image, torch.Tensor) or image.shape != (84, 84):
+        raise ValueError(f"Expected tensor of shape (84, 84), got {image.shape if isinstance(image, torch.Tensor) else type(image)}")
+    
+    # Create a tensor to hold the 9 individual images
+    processed_images = torch.zeros((9, 28, 28))
+    
+    # Split the image into 9 individual images
+    for i in range(3):
+        for j in range(3):
+            pos = i * 3 + j
+            row_start = i * 28
+            col_start = j * 28
+            processed_images[pos] = image[row_start:row_start+28, col_start:col_start+28]
+    
+    return processed_images
+
+def preprocess_batch(batch):
+    """
+    Preprocess a batch of puzzle images
+    
+    Args:
+        batch (torch.Tensor): Batch of puzzle images. Can be either:
+            - (batch_size, 84, 84) for 84x84 images
+            - (batch_size, 9, 28, 28) for already processed images
+            
+    Returns:
+        torch.Tensor: Processed batch of shape (batch_size, 9, 28, 28)
+    """
+    # Check if batch is already in the right format
+    if isinstance(batch, torch.Tensor) and len(batch.shape) == 4 and batch.shape[1:] == (9, 28, 28):
+        return batch
+    
+    # Process each image in the batch
+    if len(batch.shape) == 3 and batch.shape[1:] == (84, 84):
+        batch_size = batch.shape[0]
+        processed_batch = torch.zeros((batch_size, 9, 28, 28))
+        
+        for i in range(batch_size):
+            processed_batch[i] = preprocess_puzzle_image(batch[i])
+            
+        return processed_batch
+    else:
+        raise ValueError(f"Expected tensor of shape (batch_size, 84, 84) or (batch_size, 9, 28, 28), got {batch.shape}")
+
 def create_balanced_imbalanced_subsets(dataset, save_dir='./src/Dataset'):
     """
-    Create balanced and imbalanced subsets of the dataset
+    Create balanced and imbalanced subsets of the dataset based on positional patterns
     
     Args:
         dataset (EightPuzzleDataset): Dataset to create subsets from
@@ -182,53 +274,73 @@ def create_balanced_imbalanced_subsets(dataset, save_dir='./src/Dataset'):
     """
     os.makedirs(save_dir, exist_ok=True)
     
-    # Get positions with each digit for all puzzles
-    digit_positions = {d: [] for d in range(9)}  # 0-8 (including empty space)
+    # Analyze positional patterns in the dataset
+    position_digit_counts = {}
+    for pos in range(9):
+        position_digit_counts[pos] = {digit: 0 for digit in range(9)}  # 0-8 digits
     
-    for idx, (_, label) in enumerate(dataset):
+    # Count occurrences of each digit at each position
+    for _, label in dataset:
         for pos, digit in enumerate(label):
             digit = digit.item()
-            digit_positions[digit].append((idx, pos))
+            position_digit_counts[pos][digit] += 1
     
-    # Print distribution of digits
-    print("Original digit distribution:")
-    for digit, positions in digit_positions.items():
-        print(f"Digit {digit}: {len(positions)} positions")
+    # Identify positions with strong digit biases (for imbalanced dataset)
+    # Calculate standard deviation of digit counts at each position
+    position_stdevs = {}
+    for pos in range(9):
+        counts = list(position_digit_counts[pos].values())
+        position_stdevs[pos] = np.std(counts)
     
-    # Determine subset size (let's make it 25% of original dataset)
+    # Sort positions by standard deviation (higher std = more imbalanced)
+    sorted_positions = sorted(position_stdevs.items(), key=lambda x: x[1], reverse=True)
+    
+    # Choose the top 4 positions with highest standard deviation for creating imbalanced dataset
+    imbalanced_positions = [pos for pos, _ in sorted_positions[:4]]
+    print(f"\nPositions with highest bias (to be used for imbalanced dataset): {imbalanced_positions}")
+    
+    # Subset size (25% of original dataset)
     subset_size = len(dataset) // 4
     
-    # Create balanced subset
-    balanced_indices = set()
-    digits_per_class = subset_size // 9  # Equal number for each digit
+    # Create balanced subset - we'll randomly select puzzles that have more uniform distribution
+    # across positions, avoiding strong positional biases
+    balanced_indices = []
+    imbalanced_indices = []
     
-    for digit in range(9):
-        # Randomly select indices for this digit
-        positions = random.sample(digit_positions[digit], min(digits_per_class, len(digit_positions[digit])))
-        for idx, _ in positions:
-            balanced_indices.add(idx)
+    # For each puzzle, calculate a "balance score" - lower means more balanced
+    balance_scores = []
+    for idx in range(len(dataset)):
+        _, label = dataset[idx]
+        # Calculate how typical this puzzle's digit placements are compared to overall distribution
+        score = 0
+        for pos, digit in enumerate(label):
+            digit = digit.item()
+            # Higher score means this position-digit combination is more common
+            score += position_digit_counts[pos][digit] / sum(position_digit_counts[pos].values())
+        balance_scores.append((idx, score))
     
-    # Convert to list for Subset creation
-    balanced_indices = list(balanced_indices)
+    # Sort puzzles by balance score
+    balance_scores.sort(key=lambda x: x[1])
     
-    # Create imbalanced subset (reduce samples for digits 1, 3, 5, 7 by 50%)
-    imbalanced_indices = set()
-    digits_reduced = [1, 3, 5, 7]  # Digits to have fewer samples
+    # Take subset_size puzzles with lowest balance scores for balanced dataset
+    balanced_indices = [idx for idx, _ in balance_scores[:subset_size]]
     
-    for digit in range(9):
-        if digit in digits_reduced:
-            # 50% samples for these digits
-            samples = digits_per_class // 2
-        else:
-            # Full samples for other digits
-            samples = digits_per_class
-        
-        positions = random.sample(digit_positions[digit], min(samples, len(digit_positions[digit])))
-        for idx, _ in positions:
-            imbalanced_indices.add(idx)
+    # For imbalanced dataset, focus on puzzles with strong positional patterns
+    # Calculate imbalance scores - higher means more imbalanced for the target positions
+    imbalance_scores = []
+    for idx in range(len(dataset)):
+        _, label = dataset[idx]
+        score = 0
+        for pos in imbalanced_positions:
+            digit = label[pos].item()
+            # Higher score means this position-digit combination is more common in imbalanced positions
+            pos_total = sum(position_digit_counts[pos].values())
+            score += position_digit_counts[pos][digit] / pos_total if pos_total > 0 else 0
+        imbalance_scores.append((idx, score))
     
-    # Convert to list for Subset creation
-    imbalanced_indices = list(imbalanced_indices)
+    # Take subset_size puzzles with highest imbalance scores
+    imbalance_scores.sort(key=lambda x: x[1], reverse=True)
+    imbalanced_indices = [idx for idx, _ in imbalance_scores[:subset_size]]
     
     # Create subsets
     balanced_subset = Subset(dataset, balanced_indices)
@@ -259,25 +371,22 @@ def create_balanced_imbalanced_subsets(dataset, save_dir='./src/Dataset'):
     print(f"Balanced subset saved with {len(balanced_indices)} samples")
     print(f"Imbalanced subset saved with {len(imbalanced_indices)} samples")
     
-    # Analyze digit distribution in subsets
-    balanced_digit_counts = {d: 0 for d in range(9)}
-    imbalanced_digit_counts = {d: 0 for d in range(9)}
+    # Analyze position-digit distribution in subsets
+    balanced_position_counts = {}
+    imbalanced_position_counts = {}
+    for pos in range(9):
+        balanced_position_counts[pos] = {digit: 0 for digit in range(9)}  # 0-8 digits
+        imbalanced_position_counts[pos] = {digit: 0 for digit in range(9)}  # 0-8 digits
     
+    # Count balanced subset
     for idx in balanced_indices:
-        for digit in dataset.puzzle_labels[idx]:
-            balanced_digit_counts[digit.item()] += 1
+        for pos, digit in enumerate(dataset.puzzle_labels[idx]):
+            balanced_position_counts[pos][digit.item()] += 1
             
+    # Count imbalanced subset
     for idx in imbalanced_indices:
-        for digit in dataset.puzzle_labels[idx]:
-            imbalanced_digit_counts[digit.item()] += 1
-    
-    print("\nBalanced subset digit distribution:")
-    for digit, count in balanced_digit_counts.items():
-        print(f"Digit {digit}: {count} occurrences")
-    
-    print("\nImbalanced subset digit distribution:")
-    for digit, count in imbalanced_digit_counts.items():
-        print(f"Digit {digit}: {count} occurrences")
+        for pos, digit in enumerate(dataset.puzzle_labels[idx]):
+            imbalanced_position_counts[pos][digit.item()] += 1
     
     return balanced_subset, imbalanced_subset
     
@@ -294,7 +403,7 @@ def apply_transforms(dataset_path, output_path):
     puzzle_states = data['puzzle_states']
     puzzle_labels = data['puzzle_labels']
     
-    # Define transformations
+    # Define transformations - keep the same but apply them after preprocessing
     transform = transforms.Compose([
         transforms.RandomRotation(10),
         transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
@@ -305,14 +414,21 @@ def apply_transforms(dataset_path, output_path):
     augmented_states = []
     
     for puzzle_state in puzzle_states:
-        transformed_state = torch.zeros_like(puzzle_state)
+        # First preprocess to get 9 separate images if needed
+        if puzzle_state.shape == (84, 84):
+            processed_state = preprocess_puzzle_image(puzzle_state)
+        else:
+            processed_state = puzzle_state
+        
+        # Now apply transforms to each 28x28 image
+        transformed_state = torch.zeros_like(processed_state)
         for i in range(9):
             # Skip transforming empty cells (digit 0)
-            if torch.sum(puzzle_state[i]) > 0:
-                img = puzzle_state[i].unsqueeze(0).unsqueeze(0)  # Add batch and channel dimensions
+            if torch.sum(processed_state[i]) > 0:
+                img = processed_state[i].unsqueeze(0).unsqueeze(0)  # Add batch and channel dimensions
                 transformed_state[i] = transform(img).squeeze()
             else:
-                transformed_state[i] = puzzle_state[i]
+                transformed_state[i] = processed_state[i]
         augmented_states.append(transformed_state)
     
     # Save augmented dataset
@@ -342,6 +458,10 @@ def visualize_dataset_samples(dataset_path, num_samples=5):
         puzzle_state = puzzle_states[idx]
         puzzle_label = puzzle_labels[idx]
         
+        # If it's an 84x84 image, preprocess it first
+        if puzzle_state.shape == (84, 84):
+            puzzle_state = preprocess_puzzle_image(puzzle_state)
+            
         fig, ax = plt.subplots(3, 3, figsize=(8, 8))
         fig.suptitle(f"Puzzle Sample {idx}")
         
@@ -354,37 +474,3 @@ def visualize_dataset_samples(dataset_path, num_samples=5):
         
         plt.tight_layout()
         plt.show()
-
-# Example usage
-if __name__ == "__main__":
-    # Create dataset directory
-    os.makedirs('../Dataset', exist_ok=True)
-    
-    # Create 8-puzzle dataset
-    transform = transforms.Compose([
-        transforms.Normalize((0.1307,), (0.3081,))  # MNIST normalization
-    ])
-    
-    dataset = EightPuzzleDataset(root_dir='../Dataset', transform=transform)
-    
-    # Visualize a few samples
-    print("Visualizing 3 samples from the original dataset:")
-    for i in range(3):
-        dataset.visualize_puzzle(random.randint(0, len(dataset)-1))
-    
-    # Save full dataset
-    dataset.save_dataset('../Dataset/8puzzle_full.pt')
-    
-    # Create balanced and imbalanced subsets
-    balanced_subset, imbalanced_subset = create_balanced_imbalanced_subsets(dataset)
-    
-    # Apply transforms to the subsets
-    apply_transforms('../Dataset/8puzzle_balanced.pt', '../Dataset/8puzzle_balanced_augmented.pt')
-    apply_transforms('../Dataset/8puzzle_imbalanced.pt', '../Dataset/8puzzle_imbalanced_augmented.pt')
-    
-    # Visualize samples from augmented datasets
-    print("\nVisualization of balanced augmented dataset:")
-    visualize_dataset_samples('../Dataset/8puzzle_balanced_augmented.pt', num_samples=2)
-    
-    print("\nVisualization of imbalanced augmented dataset:")
-    visualize_dataset_samples('../Dataset/8puzzle_imbalanced_augmented.pt', num_samples=2)

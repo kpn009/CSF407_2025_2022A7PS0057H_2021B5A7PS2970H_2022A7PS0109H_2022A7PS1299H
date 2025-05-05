@@ -11,16 +11,15 @@ from sklearn.metrics import precision_score, recall_score, accuracy_score
 from tqdm import tqdm
 import pandas as pd
 from torchvision import transforms
+from preprocess import preprocess_puzzle_image
 
 # Import custom modules
 from model_8puzzle import EightPuzzleModel
 from data_8puzzle import EightPuzzleDataset
+from preprocess import preprocess_puzzle_image
 
 class CustomDataset(Dataset):
-    """
-    Custom Dataset for loading saved puzzle states
-    """
-    def __init__(self, data_path, transform=None):
+    def __init__(self, data_path, transform=None, is_84x84_format=False):
         """
         Args:
             data_path (str): Path to the data file
@@ -30,6 +29,11 @@ class CustomDataset(Dataset):
         self.puzzle_states = data['puzzle_states']
         self.puzzle_labels = data['puzzle_labels']
         self.transform = transform
+        self.is_84x84_format = is_84x84_format
+        
+        # Import preprocessing function if using 84x84 format
+        if self.is_84x84_format:
+            self.preprocess_fn = preprocess_puzzle_image
     
     def __len__(self):
         return len(self.puzzle_states)
@@ -38,6 +42,12 @@ class CustomDataset(Dataset):
         puzzle_state = self.puzzle_states[idx]
         puzzle_label = self.puzzle_labels[idx]
         
+        # Preprocess if in 84x84 format
+        if self.is_84x84_format:
+            # Convert the 84x84 image to 9 individual 28x28 images
+            puzzle_state = self.preprocess_fn(puzzle_state)
+        
+        # Apply transforms if provided (to each individual tile)
         if self.transform:
             transformed_state = torch.zeros_like(puzzle_state)
             for i in range(9):
@@ -347,7 +357,6 @@ class EightPuzzleTrainer:
                 best_val_loss = val_loss
                 best_epoch = epoch
                 best_model_state = self.model.state_dict()
-                print(f"  New best model with validation loss: {best_val_loss:.4f}")
             elif early_stopping and epoch - best_epoch >= early_stopping:
                 print(f"Early stopping triggered. No improvement for {early_stopping} epochs.")
                 break
@@ -359,7 +368,6 @@ class EightPuzzleTrainer:
         # Load best model if available
         if best_model_state is not None:
             self.model.load_state_dict(best_model_state)
-            print(f"Loaded best model from epoch {best_epoch+1} with validation loss: {best_val_loss:.4f}")
         
         # Return training history
         return {
@@ -595,39 +603,7 @@ class EightPuzzleTrainer:
 
 # Example usage
 if __name__ == "__main__":
-    # Create a sample configuration file
-    config = {
-        "model_config": "config.json",
-        "model": {
-            "input_size": 28*28,
-            "hidden_layers": [256, 128],
-            "output_size": 9,  # 9 different digits (0-8)
-            "dropout_rate": 0.2
-        },
-        "optimizer": {
-            "type": "adam",
-            "learning_rate": 0.001,
-            "weight_decay": 1e-5
-        },
-        "scheduler": {
-            "type": "step",
-            "step_size": 10,
-            "gamma": 0.1
-        },
-        "data": {
-            "batch_size": 64,
-            "num_workers": 2
-        },
-        "training": {
-            "num_epochs": 20,
-            "early_stopping": 5
-        }
-    }
-    
-    # Save the configuration
-    with open('config.json', 'w') as f:
-        json.dump(config, f, indent=4)
-    
+
     # Create trainer
     trainer = EightPuzzleTrainer('config.json')
     

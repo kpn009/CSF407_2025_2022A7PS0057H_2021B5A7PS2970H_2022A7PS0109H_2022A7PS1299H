@@ -10,6 +10,9 @@ from torchvision import transforms
 from data_8puzzle import EightPuzzleDataset, create_balanced_imbalanced_subsets, apply_transforms, visualize_dataset_samples
 from model_8puzzle import EightPuzzleModel
 from trainer_8puzzle import EightPuzzleTrainer
+from preprocess import preprocess_puzzle_image
+from real_image import load_and_preprocess_real_image
+import mnist_data
 
 def setup_environment():
     """Set up the environment for reproducibility"""
@@ -27,6 +30,49 @@ def setup_environment():
     os.makedirs('./src/Results/models', exist_ok=True)
     os.makedirs('./src/Results/plots', exist_ok=True)
 
+def preprocess_dataset(dataset_path, output_path=None):
+    """
+    Preprocess a dataset by converting 84x84 images to 9x28x28 format
+    
+    Args:
+        dataset_path (str): Path to the dataset
+        output_path (str, optional): Path to save the preprocessed dataset
+        
+    Returns:
+        dict: Preprocessed dataset with 'puzzle_states' and 'puzzle_labels'
+    """
+    # Load the dataset
+    data = torch.load(dataset_path)
+    puzzle_states = data['puzzle_states']
+    puzzle_labels = data['puzzle_labels']
+    
+    preprocessed_states = []
+    
+    # Process each puzzle state
+    for state in puzzle_states:
+        # Check if the state is already in 9x28x28 format
+        if state.shape == (9, 28, 28):
+            preprocessed_states.append(state)
+        elif state.shape == (84, 84):
+            # Preprocess the 84x84 image into 9x28x28
+            preprocessed_state = preprocess_puzzle_image(state)
+            preprocessed_states.append(preprocessed_state)
+        else:
+            raise ValueError(f"Unexpected puzzle state shape: {state.shape}")
+    
+    # Create the preprocessed dataset
+    preprocessed_data = {
+        'puzzle_states': preprocessed_states,
+        'puzzle_labels': puzzle_labels
+    }
+    
+    # Save the preprocessed dataset if an output path is provided
+    if output_path:
+        torch.save(preprocessed_data, output_path)
+        print(f"Preprocessed dataset saved to {output_path}")
+    
+    return preprocessed_data
+
 def predict_from_image_demo(model_path, image_path):
     """
     Simple function to load a model and predict digits from an image
@@ -34,7 +80,12 @@ def predict_from_image_demo(model_path, image_path):
     Args:
         model_path (str): Path to the trained model
         image_path (str): Path to the input image
+        
+    Returns:
+        torch.Tensor: Predicted digits for the puzzle
     """
+    print(f"\n=== Processing image: {image_path} ===")
+    
     # Create trainer with the same config used for training
     config_path = 'config.json'
     trainer = EightPuzzleTrainer(config_path)
@@ -42,8 +93,16 @@ def predict_from_image_demo(model_path, image_path):
     # Load the model
     trainer.load_model(model_path)
     
-    # Predict from image
-    predictions = trainer.predict_from_image(image_path)
+    # Load and preprocess the image with visualization
+    print("Preprocessing image...")
+    raw_image = load_and_preprocess_real_image(image_path, visualize=True)
+    
+    # Print shape of preprocessed image tiles
+    print(f"Preprocessed image shape: {raw_image.shape}")
+    
+    # Now predict using the processed image
+    print("Predicting puzzle state...")
+    predictions = trainer.predict(raw_image)
     
     # Display the predictions
     if predictions is not None:
@@ -54,13 +113,15 @@ def predict_from_image_demo(model_path, image_path):
         for i in range(3):
             for j in range(3):
                 # Get the predicted digit
-                digit = int(predictions[i, j])
+                digit = int(predictions[i * 3 + j])
                 
                 # Create a subplot
                 plt.subplot(3, 3, i*3 + j + 1)
                 
-                # Display the digit
+                # Display the digit with a border
                 plt.text(0.5, 0.5, str(digit), fontsize=50, ha='center', va='center')
+                plt.gca().add_patch(plt.Rectangle((0.05, 0.05), 0.9, 0.9, 
+                                                fill=False, edgecolor='black', linewidth=2))
                 
                 # Remove ticks
                 plt.xticks([])
@@ -80,8 +141,11 @@ def predict_from_image_demo(model_path, image_path):
         for i in range(3):
             print("| ", end="")
             for j in range(3):
-                print(f"{int(predictions[i, j])} | ", end="")
+                print(f"{int(predictions[i * 3 + j])} | ", end="")
             print("\n" + "-" * 13)
+        
+        # Print in flat format for easy reference
+        print(f"\nPrediction as flat array: {[int(x) for x in predictions]}")
     
     return predictions
 
@@ -101,7 +165,7 @@ def generate_datasets(train_ratio=0.8):
     
     # Create dataset
     print("Creating main dataset...")
-    full_dataset = EightPuzzleDataset(root_dir='./src/Dataset', transform=transform)
+    full_dataset = EightPuzzleDataset(root_dir='./src/Dataset', transform=transform, generate_84x84=True)
     
     # Save full dataset
     full_dataset.save_dataset('./src/Dataset/8puzzle_full.pt')
@@ -115,102 +179,82 @@ def generate_datasets(train_ratio=0.8):
     print("\nCreating balanced and imbalanced subsets...")
     balanced_subset, imbalanced_subset = create_balanced_imbalanced_subsets(full_dataset)
     
-    # Create balanced and imbalanced subsets
+    # Apply transformations to create augmented datasets
     print("\nCreating Augmented Balanced and Imbalanced datasets...")
     apply_transforms('./src/Dataset/8puzzle_balanced.pt', './src/Dataset/8puzzle_balanced_augmented.pt')
     apply_transforms('./src/Dataset/8puzzle_imbalanced.pt', './src/Dataset/8puzzle_imbalanced_augmented.pt')
-    
-    print("\nVisualization of balanced augmented dataset:")
-    visualize_dataset_samples('./src/Dataset/8puzzle_balanced_augmented.pt', num_samples=1)
-    
-    print("\nVisualization of imbalanced augmented dataset:")
-    visualize_dataset_samples('./src/Dataset/8puzzle_imbalanced_augmented.pt', num_samples=1)
     
     # Create train/test splits for each dataset
     print("\nCreating train/test splits for all datasets...")
     
     # Function to split and save datasets
-    def split_and_save_dataset(dataset, base_path):
+    def split_and_save_dataset(dataset_path, base_path):
+        # Load the dataset
+        data = torch.load(dataset_path)
+        puzzle_states = data['puzzle_states']
+        puzzle_labels = data['puzzle_labels']
+        
         # Calculate split point
-        train_size = int(len(dataset) * train_ratio)
-        test_size = len(dataset) - train_size
+        dataset_size = len(puzzle_states)
+        train_size = int(dataset_size * train_ratio)
+        test_size = dataset_size - train_size
         
-        # Random split
-        train_dataset, test_dataset = torch.utils.data.random_split(
-            dataset, [train_size, test_size],
-            generator=torch.Generator().manual_seed(42)  # For reproducibility
-        )
+        # Create indices for splitting
+        indices = list(range(dataset_size))
+        random.seed(42)  # For reproducibility
+        random.shuffle(indices)
+        train_indices = indices[:train_size]
+        test_indices = indices[train_size:]
         
-        # Save splits
+        # Create train and test datasets
+        train_puzzles = [puzzle_states[i] for i in train_indices]
+        train_labels = [puzzle_labels[i] for i in train_indices]
+        test_puzzles = [puzzle_states[i] for i in test_indices]
+        test_labels = [puzzle_labels[i] for i in test_indices]
+        
+        # Preprocess train and test datasets
         train_path = f"{base_path}_train.pt"
         test_path = f"{base_path}_test.pt"
         
-        # Extract and save train data
-        train_puzzles = torch.stack([dataset[i][0] for i in train_dataset.indices])
-        train_labels = torch.stack([dataset[i][1] for i in train_dataset.indices])
-        torch.save({'puzzle_states': train_puzzles, 'puzzle_labels': train_labels}, train_path)
+        # Save preprocessed train data
+        torch.save({
+            'puzzle_states': train_puzzles,
+            'puzzle_labels': train_labels
+        }, train_path)
         print(f"Saved train split ({train_size} samples) to {train_path}")
         
-        # Extract and save test data
-        test_puzzles = torch.stack([dataset[i][0] for i in test_dataset.indices])
-        test_labels = torch.stack([dataset[i][1] for i in test_dataset.indices])
-        torch.save({'puzzle_states': test_puzzles, 'puzzle_labels': test_labels}, test_path)
+        # Save preprocessed test data
+        torch.save({
+            'puzzle_states': test_puzzles,
+            'puzzle_labels': test_labels
+        }, test_path)
         print(f"Saved test split ({test_size} samples) to {test_path}")
         
         return train_path, test_path
     
     # Split and save the full dataset
     full_train_path, full_test_path = split_and_save_dataset(
-        full_dataset, './src/Dataset/8puzzle_full'
+        './src/Dataset/8puzzle_full.pt', './src/Dataset/8puzzle_full'
     )
     
     # Split and save balanced dataset
     balanced_train_path, balanced_test_path = split_and_save_dataset(
-        balanced_subset, './src/Dataset/8puzzle_balanced'
+        './src/Dataset/8puzzle_balanced.pt', './src/Dataset/8puzzle_balanced'
     )
     
     # Split and save imbalanced dataset
     imbalanced_train_path, imbalanced_test_path = split_and_save_dataset(
-        imbalanced_subset, './src/Dataset/8puzzle_imbalanced'
+        './src/Dataset/8puzzle_imbalanced.pt', './src/Dataset/8puzzle_imbalanced'
     )
     
-    # # Apply transforms to the train and test splits
-    # print("\nApplying transforms to train/test splits...")
+    # Split and save augmented datasets
+    balanced_aug_train_path, balanced_aug_test_path = split_and_save_dataset(
+        './src/Dataset/8puzzle_balanced_augmented.pt', './src/Dataset/8puzzle_balanced_augmented'
+    )
     
-    # # Function to apply transforms and save
-    # def apply_transforms_to_split(input_path, output_path):
-    #     apply_transforms(input_path, output_path)
-    #     print(f"Applied transforms to {input_path} and saved to {output_path}")
-    #     return output_path
-    
-    # # Apply transforms to balanced train/test
-    # balanced_train_aug_path = apply_transforms_to_split(
-    #     balanced_train_path, './src/Dataset/8puzzle_balanced_augmented_train.pt'
-    # )
-    # balanced_test_aug_path = apply_transforms_to_split(
-    #     balanced_test_path, './src/Dataset/8puzzle_balanced_augmented_test.pt'
-    # )
-    
-    # # Apply transforms to imbalanced train/test
-    # imbalanced_train_aug_path = apply_transforms_to_split(
-    #     imbalanced_train_path, './src/Dataset/8puzzle_imbalanced_augmented_train.pt'
-    # )
-    # imbalanced_test_aug_path = apply_transforms_to_split(
-    #     imbalanced_test_path, './src/Dataset/8puzzle_imbalanced_augmented_test.pt'
-    # )
-    
-    # # Visualize samples from augmented datasets
-    # print("\nVisualization of balanced augmented train dataset:")
-    # visualize_dataset_samples(balanced_train_aug_path, num_samples=1)
-    
-    # print("\nVisualization of balanced augmented test dataset:")
-    # visualize_dataset_samples(balanced_test_aug_path, num_samples=1)
-    
-    # print("\nVisualization of imbalanced augmented train dataset:")
-    # visualize_dataset_samples(imbalanced_train_aug_path, num_samples=1)
-    
-    # print("\nVisualization of imbalanced augmented test dataset:")
-    # visualize_dataset_samples(imbalanced_test_aug_path, num_samples=1)
+    imbalanced_aug_train_path, imbalanced_aug_test_path = split_and_save_dataset(
+        './src/Dataset/8puzzle_imbalanced_augmented.pt', './src/Dataset/8puzzle_imbalanced_augmented'
+    )
 
 def train_and_evaluate_model():
     """Train and evaluate the 8-puzzle model"""
@@ -219,11 +263,16 @@ def train_and_evaluate_model():
     # Create trainer
     trainer = EightPuzzleTrainer('config.json')
     
-    # Load data
+    # Preprocess datasets before loading
+    print("Preprocessing datasets...")
+    preprocess_dataset('./src/Dataset/8puzzle_full_train.pt', './src/Dataset/8puzzle_full_train_preprocessed.pt')
+    preprocess_dataset('./src/Dataset/8puzzle_full_test.pt', './src/Dataset/8puzzle_full_test_preprocessed.pt')
+    
+    # Load preprocessed data
     trainer.load_data(
-        train_path='./src/Dataset/8puzzle_full_train.pt',
+        train_path='./src/Dataset/8puzzle_full_train_preprocessed.pt',
         val_path=None,  # Will be split from training data
-        test_path='./src/Dataset/8puzzle_full_test.pt'
+        test_path='./src/Dataset/8puzzle_full_test_preprocessed.pt'
     )
     
     # Train model
@@ -249,12 +298,19 @@ def cross_test_datasets():
     # Create trainer
     trainer = EightPuzzleTrainer('config.json')
     
+    # Preprocess the datasets
+    print("Preprocessing datasets for cross-testing...")
+    preprocess_dataset('./src/Dataset/8puzzle_balanced_train.pt', './src/Dataset/8puzzle_balanced_train_preprocessed.pt')
+    preprocess_dataset('./src/Dataset/8puzzle_balanced_test.pt', './src/Dataset/8puzzle_balanced_test_preprocessed.pt')
+    preprocess_dataset('./src/Dataset/8puzzle_imbalanced_train.pt', './src/Dataset/8puzzle_imbalanced_train_preprocessed.pt')
+    preprocess_dataset('./src/Dataset/8puzzle_imbalanced_test.pt', './src/Dataset/8puzzle_imbalanced_test_preprocessed.pt')
+    
     # Perform cross-testing
     results = trainer.cross_test(
-        balanced_train_path='./src/Dataset/8puzzle_balanced_train.pt',
-        balanced_test_path='./src/Dataset/8puzzle_balanced_test.pt',
-        imbalanced_train_path='./src/Dataset/8puzzle_imbalanced_train.pt',
-        imbalanced_test_path='./src/Dataset/8puzzle_imbalanced_test.pt'
+        balanced_train_path='./src/Dataset/8puzzle_balanced_train_preprocessed.pt',
+        balanced_test_path='./src/Dataset/8puzzle_balanced_test_preprocessed.pt',
+        imbalanced_train_path='./src/Dataset/8puzzle_imbalanced_train_preprocessed.pt',
+        imbalanced_test_path='./src/Dataset/8puzzle_imbalanced_test_preprocessed.pt'
     )
     
     print("\nCross-testing results:")
@@ -267,6 +323,8 @@ def main():
     """Main function to run the complete workflow"""
     # Setup environment
     setup_environment()
+    
+    mnist_data.main()
     
     # Generate datasets
     generate_datasets()
@@ -285,15 +343,6 @@ def main():
     print(f"Test Recall: {test_recall:.4f}")
     print(f"Cross-test Balanced → Imbalanced Accuracy: {cross_test_results['balanced_to_imbalanced']['accuracy']:.4f}")
     print(f"Cross-test Imbalanced → Balanced Accuracy: {cross_test_results['imbalanced_to_balanced']['accuracy']:.4f}")
-    
-    # print("\nTesting prediction from image...")
-    # model_path = 'models/8puzzle_model.pt'  # Use your saved model path
-    # image_path = 'image.png'           # Path to your test image
-    
-    # # Run prediction
-    # prediction_result = predict_from_image_demo(model_path, image_path)
-    
-    # print("Prediction complete!")
 
 if __name__ == "__main__":
     main()
